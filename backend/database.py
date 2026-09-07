@@ -20,6 +20,20 @@ class DatabaseUnavailable(RuntimeError):
     """Sanitized database failure safe for an API response or CLI output."""
 
 
+def connection_failure_hint(error):
+    """Return fixed diagnostic text only; never return driver text or credentials."""
+    message = str(error).lower()
+    if "password authentication failed" in message or "tenant or user not found" in message:
+        return "DB_AUTH: Check the database password and pooler username in the deployment environment."
+    if "certificate" in message or "ssl error" in message:
+        return "DB_TLS: Check the trusted CA file. Use backend/certs/supabase-ca.crt, not a local computer path; retain sslmode=verify-full."
+    if any(x in message for x in ("translate host", "resolve host", "name or service not known", "getaddrinfo")):
+        return "DB_DNS: Database hostname could not be resolved. Check the project's session pooler hostname."
+    if any(x in message for x in ("network is unreachable", "connection refused", "timeout", "timed out")):
+        return "DB_NETWORK: Database endpoint could not be reached. Check the session pooler address and network restrictions."
+    return "DB_CONNECTION: Check the deployment's server-only PostgreSQL connection and schema permissions."
+
+
 def postgres_parameters(statement):
     # Preserve quoted question marks and escape literal '%' for psycopg binding.
     pieces = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", statement)
@@ -140,10 +154,26 @@ class Database:
             ) from None
         result = dict(connect_timeout=10, prepare_threshold=None, sslmode=mode)
         if not local:
-            result["sslrootcert"] = (
+            cert = (
                 os.environ.get("PROMISEFLOW_DB_SSLROOTCERT")
-                or options.get("sslrootcert", ["system"])[-1]
+                or options.get("sslrootcert", [None])[-1]
             )
+            if not cert:
+                cert = (
+                    "backend/certs/supabase-ca.crt"
+                    if url.hostname.endswith(".supabase.co") or url.hostname.endswith(".pooler.supabase.com")
+                    else "system"
+                )
+            if cert != "system":
+                cert_path = Path(cert)
+                if not cert_path.is_absolute():
+                    cert_path = ROOT / cert_path
+                if not cert_path.is_file():
+                    raise DatabaseUnavailable(
+                        "DB_TLS: Configured CA file is missing. Set PROMISEFLOW_DB_SSLROOTCERT=backend/certs/supabase-ca.crt for Supabase; local computer paths cannot be used on Vercel."
+                    )
+                cert = str(cert_path)
+            result["sslrootcert"] = cert
         return result
 
     @contextmanager
@@ -184,7 +214,7 @@ class Database:
             ) from None
         except psycopg.Error as exc:
             raise DatabaseUnavailable(
-                f"Database operation failed (SQLSTATE {exc.sqlstate or 'connection'}). Check the server connection and schema permissions."
+                f"Database operation failed (SQLSTATE {exc.sqlstate or 'connection'}). {connection_failure_hint(exc)}"
             ) from None
 
     def initialize(self):

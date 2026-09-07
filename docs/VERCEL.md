@@ -1,5 +1,18 @@
 # Vercel build configuration
 
+## Startup database errors
+
+`DatabaseUnavailable` while importing `backend/app.py` means the function could not open its configured database, not that a favicon is missing. Connection diagnostics now distinguish `DB_AUTH`, `DB_TLS`, `DB_DNS`, and `DB_NETWORK` without including driver text or credentials.
+
+For the MCCIA deployment, verify these server environment settings and redeploy after saving:
+
+- `PROMISEFLOW_DATABASE_URL`: the chosen Supabase project's **session pooler** PostgreSQL URI, including its correct database password and `sslmode=verify-full`. A public API key cannot substitute for this URI.
+- `PROMISEFLOW_DB_SSLROOTCERT=backend/certs/supabase-ca.crt`. Relative certificate paths resolve against the application root. If this variable is absent, Supabase endpoints use the bundled CA automatically. An explicitly configured missing file is rejected, not silently ignored.
+- `PROMISEFLOW_MODE=demo` for the previously migrated synthetic factory. Use a separate database/schema for production.
+- `PROMISEFLOW_ORIGINS=https://promise-flow-ai.vercel.app` for the new MCCIA address.
+
+Git pushes transfer source code, not the old Vercel project's environment variables. Do not upload `.env` to GitHub. A successful redeployment must be followed by a PostgreSQL `/api/health` response and an actual login check.
+
 The repository-root `pyproject.toml` declares `backend.app:app` as the FastAPI entrypoint and builds the React frontend into `frontend/dist`. FastAPI serves the interface and `/api` on the same origin. Keep the Vercel Root Directory at the repository root and select the FastAPI framework. Remove stale Build Command or Output Directory overrides; dashboard build commands override the repository script.
 
 This fixes entrypoint discovery, not every deployment/runtime requirement. Follow the [official FastAPI guide](https://vercel.com/docs/frameworks/backend/fastapi).

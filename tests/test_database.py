@@ -2,10 +2,38 @@ import os
 import threading
 from datetime import datetime
 import pytest
-from backend.database import Database, Record, postgres_parameters
+from backend.database import Database, DatabaseUnavailable, Record, postgres_parameters, connection_failure_hint, ROOT
 from backend.store import Store, Conflict
 from backend.db_admin import migrate_sqlite
 from backend.engine import CpSatProvider
+
+
+def test_supabase_certificate_default_and_relative_path(monkeypatch, tmp_path):
+    monkeypatch.delenv("PROMISEFLOW_DB_SSLROOTCERT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    url = "postgresql://postgres.ref:secret@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
+    options = Database(url).postgres_options()
+    assert options["sslmode"] == "verify-full"
+    assert options["sslrootcert"] == str(ROOT / "backend/certs/supabase-ca.crt")
+    monkeypatch.setenv("PROMISEFLOW_DB_SSLROOTCERT", "backend/certs/supabase-ca.crt")
+    assert Database(url).postgres_options() == options
+    monkeypatch.setenv("PROMISEFLOW_DB_SSLROOTCERT", "missing-private-path.crt")
+    with pytest.raises(DatabaseUnavailable, match="DB_TLS") as exc:
+        Database(url).postgres_options()
+    assert "missing-private-path" not in str(exc.value)
+
+
+@pytest.mark.parametrize("message,category", [
+    ("password authentication failed", "DB_AUTH"),
+    ("SSL error: certificate verify failed", "DB_TLS"),
+    ("could not translate host name", "DB_DNS"),
+    ("connection timeout expired", "DB_NETWORK"),
+    ("unexpected driver failure", "DB_CONNECTION"),
+])
+def test_connection_diagnostics_never_include_driver_secrets(message, category):
+    hint = connection_failure_hint(RuntimeError(message + " postgresql://u:VERY_PRIVATE@host/db"))
+    assert hint.startswith(category)
+    assert "VERY_PRIVATE" not in hint and "postgresql://" not in hint
 
 
 def test_explicit_sqlite_target_overrides_cloud_environment(tmp_path, monkeypatch):
